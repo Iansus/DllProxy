@@ -1,5 +1,8 @@
 # DllProxy
 
+Proxy your dll exports and add some spicy content at the same time!
+New version now relies on forwarded exports rather than runtime library load, heavily inspired from [SharpDllProxy](https://github.com/Flangvik/SharpDllProxy)
+
 # Install
 
 ```batch
@@ -11,20 +14,12 @@
 
 # Use
 
-**Warning:** currently limited to 64-bit DLLs
-**Info:** DLL is output in the `x64\Release\` directory under the name `DLLProxy.dll`
-
 ```batch
 > rundll32.exe NormalDLL.dll,test
 > rundll32.exe NormalDLL.dll,#2
 
-> python3 dllproxy.py -o ProxiedDLL.dll NormalDLL.dll
-> REM Build with VS
-> DLLproxy.sln
+> python3 dllproxy.py -m calc.exe NormalDLL.dll
 
-> REM retrieve DLL
-> copy x64\Release\DLLProxy.dll ProxyfyingDll.dll
-
-> rundll32.exe ProxyfyingDll.dll,test
-> rundll32.exe ProxyfyingDll.dll,#2
+> rundll32.exe dist\NormalDLL.dll,test
+> rundll32.exe dist\NormalDLL.dll,#2
 ```
